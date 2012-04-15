@@ -38,10 +38,7 @@
 #include <util.h>
 #endif
 
-extern "C" {
-#include "selfpipe.h"
-}
-
+#include "sigfd.h"
 #include "swrite.h"
 #include "completeterminal.h"
 #include "user.h"
@@ -64,7 +61,7 @@ int main( void )
 
   /* Adopt native locale */
   set_native_locale();
-  assert_utf8_locale();
+  assert( is_utf8_locale() );
 
   for ( int i = 0; i < ITERATIONS; i++ ) {
     /* type a character */

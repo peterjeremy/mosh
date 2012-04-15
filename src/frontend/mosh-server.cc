@@ -40,10 +40,7 @@
 #include <getopt.h>
 #include <time.h>
 
-extern "C" {
-#include "selfpipe.h"
-}
-
+#include "sigfd.h"
 #include "completeterminal.h"
 #include "swrite.h"
 #include "user.h"
@@ -69,13 +66,13 @@ void serve( int host_fd,
 	    ServerConnection &network );
 
 int run_server( const char *desired_ip, const char *desired_port,
-		char *command[], const int colors );
+		char *command[], const int colors, bool verbose );
 
 using namespace std;
 
 void print_usage( const char *argv0 )
 {
-  fprintf( stderr, "Usage: %s new [-s] [-i LOCALADDR] [-p PORT] [-c COLORS] [-- COMMAND...]\n", argv0 );
+  fprintf( stderr, "Usage: %s new [-s] [-v] [-i LOCALADDR] [-p PORT] [-c COLORS] [-l NAME=VALUE] [-- COMMAND...]\n", argv0 );
 }
 
 /* Simple spinloop */
@@ -114,6 +111,9 @@ int main( int argc, char *argv[] )
   char *desired_port = NULL;
   char **command = NULL;
   int colors = 0;
+  bool verbose = false; /* don't close stdin/stdout/stderr */
+  /* Will cause mosh-server not to correctly detach on old versions of sshd. */
+  list<string> locale_vars;
 
   /* strip off command */
   for ( int i = 0; i < argc; i++ ) {
@@ -131,7 +131,7 @@ int main( int argc, char *argv[] )
        && (strcmp( argv[ 1 ], "new" ) == 0) ) {
     /* new option syntax */
     int opt;
-    while ( (opt = getopt( argc, argv, "i:p:c:s" )) != -1 ) {
+    while ( (opt = getopt( argc - 1, argv + 1, "i:p:c:svl:" )) != -1 ) {
       switch ( opt ) {
       case 'i':
 	desired_ip = optarg;
@@ -145,6 +145,12 @@ int main( int argc, char *argv[] )
 	break;
       case 'c':
 	colors = myatoi( optarg );
+	break;
+      case 'v':
+	verbose = true;
+	break;
+      case 'l':
+	locale_vars.push_back( string( optarg ) );
 	break;
       default:
 	print_usage( argv[ 0 ] );
@@ -201,10 +207,31 @@ int main( int argc, char *argv[] )
 
   /* Adopt implementation locale */
   set_native_locale();
-  assert_utf8_locale();
+  if ( !is_utf8_locale() ) {
+    /* apply locale-related environment variables from client */
+    clear_locale_variables();
+    for ( list<string>::const_iterator i = locale_vars.begin();
+	  i != locale_vars.end();
+	  i++ ) {
+      char *env_string = strdup( i->c_str() );
+      assert( env_string );
+      if ( 0 != putenv( env_string ) ) {
+	perror( "putenv" );
+      }
+    }
+
+    /* check again */
+    set_native_locale();
+    if ( !is_utf8_locale() ) {
+      fprintf( stderr, "mosh-server needs a UTF-8 native locale to run.\n\n" );
+      fprintf( stderr, "Unfortunately, the locale environment variables currently specify\nthe character set \"%s\".\n\n", locale_charset() );
+      int unused __attribute((unused)) = system( "locale" );
+      exit( 1 );
+    }
+  }
 
   try {
-    return run_server( desired_ip, desired_port, command, colors );
+    return run_server( desired_ip, desired_port, command, colors, verbose );
   } catch ( Network::NetworkException e ) {
     fprintf( stderr, "Network exception: %s: %s\n",
 	     e.function.c_str(), strerror( e.the_errno ) );
@@ -217,11 +244,12 @@ int main( int argc, char *argv[] )
 }
 
 int run_server( const char *desired_ip, const char *desired_port,
-		char *command[], const int colors ) {
+		char *command[], const int colors, bool verbose ) {
   /* get initial window size */
   struct winsize window_size;
   if ( ioctl( STDIN_FILENO, TIOCGWINSZ, &window_size ) < 0 ) {
     perror( "ioctl TIOCGWINSZ" );
+    fprintf( stderr, "If running with ssh, please use -t argument to provide a PTY.\n" );
     exit( 1 );
   }
 
@@ -230,11 +258,11 @@ int run_server( const char *desired_ip, const char *desired_port,
 
   /* open network */
   Network::UserStream blank;
-  ServerConnection network( terminal, blank, desired_ip, desired_port );
+  ServerConnection *network = new ServerConnection( terminal, blank, desired_ip, desired_port );
 
   /* network.set_verbose(); */
 
-  printf( "\nMOSH CONNECT %d %s\n", network.port(), network.get_key().c_str() );
+  printf( "\nMOSH CONNECT %d %s\n", network->port(), network->get_key().c_str() );
   fflush( stdout );
 
   /* don't let signals kill us */
@@ -297,6 +325,9 @@ int run_server( const char *desired_ip, const char *desired_port,
     fatal_assert( sigemptyset( &signals_to_block ) == 0 );
     fatal_assert( sigprocmask( SIG_SETMASK, &signals_to_block, NULL ) == 0 );
 
+    /* close server-related file descriptors */
+    delete network;
+
     /* set TERM */
     const char default_term[] = "xterm";
     const char color_term[] = "xterm-256color";
@@ -331,6 +362,12 @@ int run_server( const char *desired_ip, const char *desired_port,
     }
   } else {
     /* parent */
+    if ( !verbose ) {
+      /* Necessary to properly detach on old versions of sshd (e.g. RHEL/CentOS 5.0). */
+      close( STDIN_FILENO );
+      close( STDOUT_FILENO );
+      close( STDERR_FILENO );
+    }
 
     #ifdef HAVE_UTEMPTER
     /* make utmp entry */
@@ -340,7 +377,7 @@ int run_server( const char *desired_ip, const char *desired_port,
     #endif
 
     try {
-      serve( master, terminal, network );
+      serve( master, terminal, *network );
     } catch ( Network::NetworkException e ) {
       fprintf( stderr, "Network exception: %s: %s\n",
 	       e.function.c_str(), strerror( e.the_errno ) );
@@ -353,6 +390,8 @@ int run_server( const char *desired_ip, const char *desired_port,
       perror( "close" );
       exit( 1 );
     }
+
+    delete network;
 
     #ifdef HAVE_UTEMPTER
     utempter_remove_added_record();
@@ -367,14 +406,14 @@ int run_server( const char *desired_ip, const char *desired_port,
 void serve( int host_fd, Terminal::Complete &terminal, ServerConnection &network )
 {
   /* establish fd for shutdown signals */
-  int signal_fd = selfpipe_init();
+  int signal_fd = sigfd_init();
   if ( signal_fd < 0 ) {
-    perror( "selfpipe_init" );
+    perror( "sigfd_init" );
     return;
   }
 
-  fatal_assert( selfpipe_trap( SIGTERM ) == 0 );
-  fatal_assert( selfpipe_trap( SIGINT ) == 0 );
+  fatal_assert( sigfd_trap( SIGTERM ) == 0 );
+  fatal_assert( sigfd_trap( SIGINT ) == 0 );
 
   /* prepare to poll for events */
   struct pollfd pollfds[ 3 ];
@@ -516,11 +555,11 @@ void serve( int host_fd, Terminal::Complete &terminal, ServerConnection &network
 
       if ( pollfds[ 2 ].revents & POLLIN ) {
 	/* shutdown signal */
-	int signo = selfpipe_read();
+	int signo = sigfd_read();
 	if ( signo == 0 ) {
 	  break;
 	} else if ( signo < 0 ) {
-	  perror( "selfpipe_read" );
+	  perror( "sigfd_read" );
 	  break;
 	}
 

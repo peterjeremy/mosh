@@ -1,5 +1,6 @@
 AM_CPPFLAGS = $(protobuf_CFLAGS)
-AM_CXXFLAGS = $(WARNING_CXXFLAGS) $(PICKY_CXXFLAGS) -fno-default-inline -pipe
+AM_CXXFLAGS = $(WARNING_CXXFLAGS) $(PICKY_CXXFLAGS) $(HARDEN_CFLAGS) $(MISC_CXXFLAGS)
+AM_LDFLAGS  = $(HARDEN_LDFLAGS)
 
 if BUILD_EXAMPLES
   noinst_PROGRAMS = encrypt decrypt ntester parse termemu benchmark
@@ -19,7 +20,7 @@ parse_LDADD = ../terminal/libmoshterminal.a ../util/libmoshutil.a -lutil $(BOOST
 
 termemu_SOURCES = termemu.cc
 termemu_CPPFLAGS = -I$(srcdir)/../terminal -I$(srcdir)/../util -I$(srcdir)/../statesync -I../protobufs $(poll_CFLAGS)
-termemu_LDADD = ../terminal/libmoshterminal.a ../util/libmoshutil.a ../statesync/libmoshstatesync.a ../protobufs/libmoshprotos.a -lutil $(BOOST_LDFLAGS) $(protobuf_LIBS) $(poll_LIBS)
+termemu_LDADD = ../terminal/libmoshterminal.a ../util/libmoshutil.a ../statesync/libmoshstatesync.a ../protobufs/libmoshprotos.a -lutil $(BOOST_LDFLAGS) $(TINFO_LIBS) $(protobuf_LIBS) $(poll_LIBS)
 if COND_THIRD_LIBSTDDJB
   termemu_CPPFLAGS += -I$(top_srcdir)/third/libstddjb
   termemu_LDADD += $(top_builddir)/third/libstddjb/libstddjb.a
@@ -34,7 +35,7 @@ ntester_LDADD = ../statesync/libmoshstatesync.a ../terminal/libmoshterminal.a ..
 
 benchmark_SOURCES = benchmark.cc
 benchmark_CPPFLAGS = -I$(srcdir)/../util -I$(srcdir)/../statesync -I$(srcdir)/../terminal -I../protobufs -I$(srcdir)/../frontend -I$(srcdir)/../crypto $(BOOST_CPPFLAGS) -I$(srcdir)/../network $(poll_CFLAGS)
-benchmark_LDADD = ../frontend/terminaloverlay.o ../statesync/libmoshstatesync.a ../terminal/libmoshterminal.a ../protobufs/libmoshprotos.a ../network/libmoshnetwork.a ../crypto/libmoshcrypto.a ../util/libmoshutil.a $(poll_LIBS) -lutil -lm $(BOOST_LDFLAGS) $(protobuf_LIBS)
+benchmark_LDADD = ../frontend/terminaloverlay.o ../statesync/libmoshstatesync.a ../terminal/libmoshterminal.a ../protobufs/libmoshprotos.a ../network/libmoshnetwork.a ../crypto/libmoshcrypto.a ../util/libmoshutil.a $(poll_LIBS) -lutil -lm $(BOOST_LDFLAGS) $(TINFO_LIBS) $(protobuf_LIBS)
 if COND_THIRD_LIBSTDDJB
   benchmark_CPPFLAGS += -I$(top_srcdir)/third/libstddjb
   benchmark_LDADD += $(top_builddir)/third/libstddjb/libstddjb.a

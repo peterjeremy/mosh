@@ -37,10 +37,7 @@
 #include <util.h>
 #endif
 
-extern "C" {
-#include "selfpipe.h"
-}
-
+#include "sigfd.h"
 #include "stmclient.h"
 #include "swrite.h"
 #include "completeterminal.h"
@@ -52,7 +49,12 @@ extern "C" {
 
 void STMClient::init( void )
 {
-  assert_utf8_locale();
+  if ( !is_utf8_locale() ) {
+    fprintf( stderr, "mosh-client needs a UTF-8 native locale to run.\n\n" );
+    fprintf( stderr, "Unfortunately, the locale environment variables currently specify\nthe character set \"%s\".\n\n", locale_charset() );
+    int unused __attribute((unused)) = system( "locale" );
+    exit( 1 );
+  }
 
   /* Verify terminal configuration */
   if ( tcgetattr( STDIN_FILENO, &saved_termios ) < 0 ) {
@@ -82,7 +84,9 @@ void STMClient::init( void )
   swrite( STDOUT_FILENO, Terminal::Emulator::open().c_str() );
 
   /* Add our name to window title */
-  overlays.set_title_prefix( wstring( L"[mosh] " ) );
+  if ( !getenv( "MOSH_TITLE_NOPREFIX" ) ) {
+    overlays.set_title_prefix( wstring( L"[mosh] " ) );
+  }
 }
 
 void STMClient::shutdown( void )
@@ -105,19 +109,19 @@ void STMClient::shutdown( void )
 void STMClient::main_init( void )
 {
   /* establish a fd for signals */
-  signal_fd = selfpipe_init();
+  signal_fd = sigfd_init();
   if ( signal_fd < 0 ) {
-    perror( "selfpipe_init" );
+    perror( "sigfd_init" );
     return;
   }
 
-  fatal_assert( selfpipe_trap( SIGWINCH ) == 0 );
-  fatal_assert( selfpipe_trap( SIGTERM ) == 0 );
-  fatal_assert( selfpipe_trap( SIGINT ) == 0 );
-  fatal_assert( selfpipe_trap( SIGHUP ) == 0 );
-  fatal_assert( selfpipe_trap( SIGPIPE ) == 0 );
-  fatal_assert( selfpipe_trap( SIGTSTP ) == 0 );
-  fatal_assert( selfpipe_trap( SIGCONT ) == 0 );
+  fatal_assert( sigfd_trap( SIGWINCH ) == 0 );
+  fatal_assert( sigfd_trap( SIGTERM ) == 0 );
+  fatal_assert( sigfd_trap( SIGINT ) == 0 );
+  fatal_assert( sigfd_trap( SIGHUP ) == 0 );
+  fatal_assert( sigfd_trap( SIGPIPE ) == 0 );
+  fatal_assert( sigfd_trap( SIGTSTP ) == 0 );
+  fatal_assert( sigfd_trap( SIGCONT ) == 0 );
 
   /* get initial window size */
   if ( ioctl( STDIN_FILENO, TIOCGWINSZ, &window_size ) < 0 ) {
@@ -325,7 +329,7 @@ void STMClient::main( void )
       }
 
       if ( pollfds[ 2 ].revents & POLLIN ) {
-	int signo = selfpipe_read();
+	int signo = sigfd_read();
 
 	if ( signo == SIGWINCH ) {
 	  /* resize */

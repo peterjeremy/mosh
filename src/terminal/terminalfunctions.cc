@@ -273,8 +273,9 @@ void CSI_DECRM( Framebuffer *fb, Dispatcher *dispatch )
   }
 }
 
-static Function func_CSI_DECSM( CSI, "?h", CSI_DECSM );
-static Function func_CSI_DECRM( CSI, "?l", CSI_DECRM );
+/* These functions don't clear wrap state. */
+static Function func_CSI_DECSM( CSI, "?h", CSI_DECSM, false );
+static Function func_CSI_DECRM( CSI, "?l", CSI_DECRM, false );
 
 static bool *get_ANSI_mode( int param, Framebuffer *fb ) {
   switch ( param ) {
@@ -314,6 +315,12 @@ void CSI_DECSTBM( Framebuffer *fb, Dispatcher *dispatch )
 {
   int top = dispatch->getparam( 0, 1 );
   int bottom = dispatch->getparam( 1, fb->ds.get_height() );
+
+  if ( (bottom <= top)
+       || (top > fb->ds.get_height())
+       || (top == 0 && bottom == 1) ) {
+    return; /* invalid, xterm ignores */
+  }
 
   fb->ds.set_scrolling_region( top - 1, bottom - 1 );
   fb->ds.move_row( 0 );
@@ -499,12 +506,29 @@ static Function func_CSI_DECSTR( CSI, "!p", CSI_DECSTR );
 void Dispatcher::OSC_dispatch( const Parser::OSC_End *act, Framebuffer *fb )
 {
   if ( OSC_string.size() >= 2 ) {
-    if ( (OSC_string[ 0 ] == L'0')
+    if ( ( (OSC_string[ 0 ] == L'0')
+	   || (OSC_string[ 0 ] == L'1')
+	   || (OSC_string[ 0 ] == L'2') )
 	 && (OSC_string[ 1 ] == L';') ) {
       std::deque<wchar_t> newtitle( OSC_string.begin(), OSC_string.end() );
       newtitle.erase( newtitle.begin() );
       newtitle.erase( newtitle.begin() );
-      fb->set_window_title( newtitle );
+
+      switch ( OSC_string[ 0 ] ) {
+      case L'0':
+	fb->set_icon_name( newtitle );
+	fb->set_window_title( newtitle );
+	break;
+      case L'1':
+	fb->set_icon_name( newtitle );
+	break;
+      case L'2':
+	fb->set_window_title( newtitle );
+	break;
+      default:
+	break;
+      }
+
       act->handled = true;
     }
   }

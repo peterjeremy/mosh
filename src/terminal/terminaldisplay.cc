@@ -42,19 +42,45 @@ std::string Display::new_frame( bool initialized, const Framebuffer &last, const
     frame.append( "\x07" );
   }
 
-  /* has window title changed? */
+  /* has icon name or window title changed? */
   if ( (!initialized)
+       || (f.get_icon_name() != frame.last_frame.get_icon_name())
        || (f.get_window_title() != frame.last_frame.get_window_title()) ) {
-      /* set window title */
-    frame.append( "\033]0;" );
-    const std::deque<wchar_t> &window_title( f.get_window_title() );
-    for ( BOOST_AUTO( i, window_title.begin() );
-	  i != window_title.end();
-	  i++ ) {
-      snprintf( tmp, 64, "%lc", *i );
-      frame.append( tmp );
+      /* set icon name and window title */
+    if ( f.get_icon_name() == f.get_window_title() ) {
+      /* write combined Icon Name and Window Title */
+      frame.append( "\033]0;" );
+      const std::deque<wchar_t> &window_title( f.get_window_title() );
+      for ( BOOST_AUTO( i, window_title.begin() );
+	    i != window_title.end();
+	    i++ ) {
+	snprintf( tmp, 64, "%lc", *i );
+	frame.append( tmp );
+      }
+      frame.append( "\033\\" );
+    } else {
+      /* write Icon Name */
+      frame.append( "\033]1;" );
+      const std::deque<wchar_t> &icon_name( f.get_icon_name() );
+      for ( BOOST_AUTO( i, icon_name.begin() );
+	    i != icon_name.end();
+	    i++ ) {
+	snprintf( tmp, 64, "%lc", *i );
+	frame.append( tmp );
+      }
+      frame.append( "\033\\" );
+
+      frame.append( "\033]2;" );
+      const std::deque<wchar_t> &window_title( f.get_window_title() );
+      for ( BOOST_AUTO( i, window_title.begin() );
+	    i != window_title.end();
+	    i++ ) {
+	snprintf( tmp, 64, "%lc", *i );
+	frame.append( tmp );
+      }
+      frame.append( "\033\\" );
     }
-    frame.append( "\033\\" );
+
   }
 
   /* has reverse video state changed? */
@@ -180,6 +206,7 @@ std::string Display::new_frame( bool initialized, const Framebuffer &last, const
 	/* next write will wrap */
 	frame.cursor_x = 0;
 	frame.cursor_y++;
+	frame.force_next_put = true;
       }
     }
 
@@ -196,6 +223,7 @@ std::string Display::new_frame( bool initialized, const Framebuffer &last, const
       frame.append( tmp );
       frame.cursor_x = frame.x;
 
+      frame.force_next_put = true;
       put_cell( initialized, frame, f );
     }
   }
@@ -237,10 +265,12 @@ void Display::put_cell( bool initialized, FrameState &frame, const Framebuffer &
 
   const Cell *cell = f.get_cell( frame.y, frame.x );
 
-  if ( initialized
-       && ( *cell == *(frame.last_frame.get_cell( frame.y, frame.x )) ) ) {
-    frame.x += cell->width;
-    return;
+  if ( !frame.force_next_put ) {
+    if ( initialized
+	 && ( *cell == *(frame.last_frame.get_cell( frame.y, frame.x )) ) ) {
+      frame.x += cell->width;
+      return;
+    }
   }
 
   if ( (frame.x != frame.cursor_x) || (frame.y != frame.cursor_y) ) {
@@ -269,6 +299,12 @@ void Display::put_cell( bool initialized, FrameState &frame, const Framebuffer &
     assert( frame.x + clear_count <= f.ds.get_width() );
 
     bool can_use_erase = has_bce || (cell->renditions == initial_rendition());
+
+    if ( frame.force_next_put ) {
+      frame.append( " " );
+      frame.append_silent_move( frame.y, frame.x );
+      frame.force_next_put = false;
+    }
 
     /* can we go to the end of the line? */
     if ( (frame.x + clear_count == f.ds.get_width())
@@ -309,6 +345,8 @@ void Display::put_cell( bool initialized, FrameState &frame, const Framebuffer &
 
   frame.x += cell->width;
   frame.cursor_x += cell->width;
+
+  frame.force_next_put = false;
 }
 
 void FrameState::append_silent_move( int y, int x )

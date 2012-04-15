@@ -49,7 +49,7 @@ DrawState::DrawState( int s_width, int s_height )
 }
 
 Framebuffer::Framebuffer( int s_width, int s_height )
-  : rows( s_height, Row( s_width, 0 ) ), window_title(), bell_count( 0 ), ds( s_width, s_height )
+  : rows( s_height, Row( s_width, 0 ) ), icon_name(), window_title(), bell_count( 0 ), ds( s_width, s_height )
 {
   assert( s_height > 0 );
   assert( s_width > 0 );
@@ -112,8 +112,8 @@ void DrawState::move_col( int N, bool relative, bool implicit )
     cursor_col = N;
   }
 
-  if ( implicit && (cursor_col >= width) ) {
-    next_print_will_wrap = true;
+  if ( implicit ) {
+    next_print_will_wrap = (cursor_col >= width);
   }
 
   snap_cursor_to_border();
@@ -380,7 +380,7 @@ Renditions::Renditions( int s_background )
     background_color( s_background )
 {}
 
-/* This routine cannot be used to set a color beyond the 8-color set. */
+/* This routine cannot be used to set a color beyond the 16-color set. */
 void Renditions::set_rendition( int num )
 {
   if ( num == 0 ) {
@@ -402,6 +402,12 @@ void Renditions::set_rendition( int num )
     return;
   } else if ( (40 <= num) && (num <= 47) ) { /* background color in 8-color set */
     background_color = num;
+    return;
+  } else if ( (90 <= num) && (num <= 97) ) { /* foreground color in 16-color set */
+    foreground_color = num - 90 + 38;
+    return;
+  } else if ( (100 <= num) && (num <= 107) ) { /* background color in 16-color set */
+    background_color = num - 100 + 48;
     return;
   }
 
@@ -540,6 +546,13 @@ void Row::reset( int background_color )
 
 void Framebuffer::prefix_window_title( const std::deque<wchar_t> &s )
 {
+  if ( icon_name == window_title ) {
+    /* preserve equivalence */
+    for ( BOOST_AUTO( i, s.rbegin() ); i != s.rend(); i++ ) {
+      icon_name.push_front( *i );
+    }
+  }
+
   for ( BOOST_AUTO( i, s.rbegin() ); i != s.rend(); i++ ) {
     window_title.push_front( *i );
   }
