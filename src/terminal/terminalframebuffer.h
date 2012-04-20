@@ -96,11 +96,20 @@ namespace Terminal {
 	       || ( (contents.size() == 1) && ( (contents.front() == 0x20)
 						|| (contents.front() == 0xA0) ) ) );
     }
+
+    bool contents_match ( const Cell& other ) const
+    {
+      return ( is_blank() && other.is_blank() )
+             || ( contents == other.contents );
+    }
+
+    bool compare( const Cell &other ) const;
   };
 
   class Row {
   public:
-    std::vector<Cell> cells;
+    typedef std::vector<Cell> cells_type;
+    cells_type cells;
 
     Row( size_t s_width, int background_color )
       : cells( s_width, Cell( background_color ) )
@@ -148,7 +157,10 @@ namespace Terminal {
     int cursor_col, cursor_row;
     int combining_char_col, combining_char_row;
 
+    bool default_tabs;
     std::vector<bool> tabs;
+
+    void reinitialize_tabs( unsigned int start );
 
     int scrolling_region_top_row, scrolling_region_bottom_row;
 
@@ -180,9 +192,9 @@ namespace Terminal {
 
     void set_tab( void );
     void clear_tab( int col );
+    void clear_default_tabs( void ) { default_tabs = false; }
+    /* Default tabs can't be restored without resetting the draw state. */
     int get_next_tab( void );
-
-    std::vector<int> get_tabs( void );
 
     void set_scrolling_region( int top, int bottom );
 
@@ -217,7 +229,8 @@ namespace Terminal {
 
   class Framebuffer {
   private:
-    std::deque<Row> rows;
+    typedef std::deque<Row> rows_type;
+    rows_type rows;
     std::deque<wchar_t> icon_name;
     std::deque<wchar_t> window_title;
     unsigned int bell_count;

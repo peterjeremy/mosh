@@ -16,8 +16,6 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include <boost/lambda/lambda.hpp>
-#include <boost/typeof/typeof.hpp>
 #include <algorithm>
 #include <list>
 #include <stdio.h>
@@ -27,7 +25,6 @@
 #include "transportsender.h"
 #include "transportfragment.h"
 
-using namespace boost::lambda;
 using namespace Network;
 using namespace std;
 
@@ -45,7 +42,7 @@ TransportSender<MyState>::TransportSender( Connection *s_connection, MyState &in
     shutdown_tries( 0 ),
     ack_num( 0 ),
     pending_data_ack( false ),
-    SEND_MINDELAY( 15 ),
+    SEND_MINDELAY( 8 ),
     last_heard( 0 ),
     prng()
 {
@@ -146,6 +143,15 @@ void TransportSender<MyState>::tick( void )
     
   string diff = current_state.diff_from( assumed_receiver_state->state );
 
+  /* verify diff has round-trip identity (modulo Unicode fallback rendering) */
+  /*
+  MyState newstate( assumed_receiver_state->state );
+  newstate.apply_string( diff );
+  if ( current_state.compare( newstate ) ) {
+    fprintf( stderr, "Diff: %s\n", diff.c_str() );
+  }
+  */
+
   if ( diff.empty() && (now >= next_ack_time) ) {
     send_empty_ack();
     return;
@@ -162,7 +168,9 @@ void TransportSender<MyState>::tick( void )
 template <class MyState>
 void TransportSender<MyState>::send_empty_ack( void )
 {
-  assert ( timestamp() >= next_ack_time );
+  uint64_t now = timestamp();
+
+  assert( now >= next_ack_time );
 
   uint64_t new_num = sent_states.back().num + 1;
 
@@ -172,10 +180,10 @@ void TransportSender<MyState>::send_empty_ack( void )
   }
 
   //  sent_states.push_back( TimestampedState<MyState>( sent_states.back().timestamp, new_num, current_state ) );
-  add_sent_state( sent_states.back().timestamp, new_num, current_state );
+  add_sent_state( now, new_num, current_state );
   send_in_fragments( "", new_num );
 
-  next_ack_time = timestamp() + ACK_INTERVAL;
+  next_ack_time = now + ACK_INTERVAL;
   next_send_time = uint64_t(-1);
 }
 
@@ -184,7 +192,7 @@ void TransportSender<MyState>::add_sent_state( uint64_t the_timestamp, uint64_t 
 {
   sent_states.push_back( TimestampedState<MyState>( the_timestamp, num, state ) );
   if ( sent_states.size() > 32 ) { /* limit on state queue */
-    BOOST_AUTO( last, sent_states.end() );
+    typename sent_states_type::iterator last = sent_states.end();
     for ( int i = 0; i < 16; i++ ) { last--; }
     sent_states.erase( last ); /* erase state from middle of queue */
   }
@@ -290,7 +298,9 @@ void TransportSender<MyState>::send_in_fragments( string diff, uint64_t new_num 
 
   vector<Fragment> fragments = fragmenter.make_fragments( inst, connection->get_MTU() );
 
-  for ( BOOST_AUTO( i, fragments.begin() ); i != fragments.end(); i++ ) {
+  for ( vector<Fragment>::iterator i = fragments.begin();
+        i != fragments.end();
+        i++ ) {
     connection->send( i->tostring() );
 
     if ( verbose ) {
@@ -311,9 +321,10 @@ void TransportSender<MyState>::process_acknowledgment_through( uint64_t ack_num 
 {
   /* Ignore ack if we have culled the state it's acknowledging */
 
-  if ( sent_states.end() != find_if( sent_states.begin(), sent_states.end(),
-				     (&_1)->*&TimestampedState<MyState>::num == ack_num ) ) {
-    sent_states.remove_if( (&_1)->*&TimestampedState<MyState>::num < ack_num );
+  if ( sent_states.end() !=
+       find_if( sent_states.begin(), sent_states.end(),
+		bind2nd( mem_fun_ref( &TimestampedState<MyState>::num_eq ), ack_num ) ) ) {
+    sent_states.remove_if( bind2nd( mem_fun_ref( &TimestampedState<MyState>::num_lt ), ack_num ) );
   }
 
   assert( !sent_states.empty() );

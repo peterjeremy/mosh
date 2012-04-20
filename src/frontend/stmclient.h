@@ -44,7 +44,9 @@ private:
   Network::Transport< Network::UserStream, Terminal::Complete > *network;
   Terminal::Display display;
 
+  std::wstring connecting_notification;
   bool repaint_requested, quit_sequence_started;
+  bool clean_shutdown;
 
   void main_init( void );
   bool process_network_input( void );
@@ -53,7 +55,11 @@ private:
 
   void output_new_frame( void );
 
-  bool still_connecting( void ) { return (network->get_remote_state_num() == 0); }
+  bool still_connecting( void )
+  {
+    /* Initially, network == NULL */
+    return network && ( network->get_remote_state_num() == 0 );
+  }
 
 public:
   STMClient( const char *s_ip, int s_port, const char *s_key, const char *predict_mode )
@@ -66,8 +72,10 @@ public:
       overlays(),
       network( NULL ),
       display( true ), /* use TERM environment var to initialize display */
+      connecting_notification(),
       repaint_requested( false ),
-      quit_sequence_started( false )
+      quit_sequence_started( false ),
+      clean_shutdown( false )
   {
     if ( predict_mode ) {
       if ( !strcmp( predict_mode, "always" ) ) {

@@ -43,7 +43,7 @@ namespace Network {
     static const int SEND_INTERVAL_MAX = 250; /* ms between frames */
     static const int ACK_INTERVAL = 3000; /* ms between empty acks */
     static const int ACK_DELAY = 100; /* ms before delayed ack */
-    static const int SHUTDOWN_RETRIES = 3; /* number of shutdown packets to send before giving up */
+    static const int SHUTDOWN_RETRIES = 16; /* number of shutdown packets to send before giving up */
     static const int ACTIVE_RETRY_TIMEOUT = 10000; /* attempt to resend at frame rate */
 
     /* helper methods for tick() */
@@ -59,12 +59,13 @@ namespace Network {
 
     MyState current_state;
 
-    list< TimestampedState<MyState> > sent_states;
+    typedef list< TimestampedState<MyState> > sent_states_type;
+    sent_states_type sent_states;
     /* first element: known, acknowledged receiver state */
     /* last element: last sent state */
 
     /* somewhere in the middle: the assumed state of the receiver */
-    typename list< TimestampedState<MyState> >::iterator assumed_receiver_state;
+    typename sent_states_type::iterator assumed_receiver_state;
 
     /* for fragment creation */
     Fragmenter fragmenter;

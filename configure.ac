@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.61])
-AC_INIT([mosh], [1.1.3a], [mosh-devel@mit.edu])
+AC_INIT([mosh], [1.1.94d], [mosh-devel@mit.edu])
 AM_INIT_AUTOMAKE([-Wall -Werror foreign])
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
 AC_CONFIG_SRCDIR([src/frontend/mosh-client.cc])
@@ -149,15 +149,13 @@ AC_ARG_WITH([utempter],
   [with_utempter="$withval"],
   [with_utempter="check"])
 AS_IF([test x"$with_utempter" != xno],
-  [AC_SEARCH_LIBS([utempter_remove_added_record], [utempter],
+  [AC_SEARCH_LIBS([utempter_remove_record], [utempter],
     [AC_DEFINE([HAVE_UTEMPTER], [1], [Define if libutempter is available.])],
     [AS_IF([test x"$with_utempter" = xcheck],
       [AC_MSG_WARN([Unable to find libutempter; utmp entries will not be made.])],
       [AC_MSG_ERROR([--with-utempter was given but libutempter was not found.])])])])
 
 AC_SEARCH_LIBS([compress], [z], , [AC_MSG_ERROR([Unable to find zlib.])])
-
-AX_BOOST_BASE(, , [AC_MSG_ERROR([Unable to find boost libraries.])])
 
 AC_ARG_WITH([skalibs],
   [AS_HELP_STRING([--with-skalibs[=DIR]],
@@ -203,9 +201,9 @@ AM_CONDITIONAL([COND_THIRD_LIBSTDDJB],
   [test x"$have_signalfd" = xno && test x"$with_skalibs" = xno])
 
 # Checks for header files.
-AC_CHECK_HEADERS([arpa/inet.h fcntl.h langinfo.h limits.h locale.h netinet/in.h stddef.h stdint.h inttypes.h stdlib.h string.h sys/ioctl.h sys/resource.h sys/socket.h sys/time.h term.h termios.h unistd.h wchar.h wctype.h], [], [AC_MSG_ERROR([Missing required header file.])])
+AC_CHECK_HEADERS([arpa/inet.h fcntl.h langinfo.h limits.h locale.h netinet/in.h stddef.h stdint.h inttypes.h stdlib.h string.h sys/ioctl.h sys/resource.h sys/socket.h sys/stat.h sys/time.h termios.h unistd.h wchar.h wctype.h], [], [AC_MSG_ERROR([Missing required header file.])])
 
-AC_CHECK_HEADERS([pty.h util.h libutil.h])
+AC_CHECK_HEADERS([pty.h util.h libutil.h paths.h])
 AC_CHECK_HEADERS([endian.h sys/endian.h])
 
 # Checks for typedefs, structures, and compiler characteristics.
@@ -229,21 +227,99 @@ AC_CHECK_FUNCS([gettimeofday setrlimit inet_ntoa iswprint memchr memset nl_langi
 
 AC_SEARCH_LIBS([clock_gettime], [rt], [AC_DEFINE([HAVE_CLOCK_GETTIME], [1], [Define if clock_gettime is available.])])
 
+AS_IF([test x"$__CYGWIN__" != x && test x"$TINFO_CPPFLAGS" = x],
+  [TINFO_CPPFLAGS="-I/usr/include/ncurses"])
+
 PKG_CHECK_MODULES([TINFO], [tinfo], ,
   [PKG_CHECK_MODULES([TINFO], [ncurses], ,
      [AX_CHECK_LIBRARY([TINFO], [curses.h], [tinfo],
         [AC_SUBST([TINFO_CFLAGS], ["$TINFO_CPPFLAGS"])
          AC_SUBST([TINFO_LIBS], ["$TINFO_LDFLAGS -ltinfo"])],
-        [AX_CHECK_LIBRARY([TINFO], [curses.h], [ncurses], ,
+        [AX_CHECK_LIBRARY([NCURSES], [curses.h], [ncurses],
            [AC_SUBST([TINFO_CFLAGS], ["$TINFO_CPPFLAGS"])
             AC_SUBST([TINFO_LIBS], ["$TINFO_LDFLAGS -lncurses"])],
            [AC_MSG_ERROR([Unable to find libtinfo or libncurses])])])])])
 
+AC_CHECK_DECL([forkpty],
+  [AC_DEFINE([FORKPTY_IN_LIBUTIL], [1],
+     [Define if libutil.h necessary for forkpty().])],
+  , [[#include <libutil.h>]])
+
 AC_ARG_VAR([poll_CFLAGS], [C compiler flags for poll])
 AC_ARG_VAR([poll_LIBS], [linker flags for poll])
-if test -z "$poll_LIBS"; then
-   AC_CHECK_LIB([poll], [poll], [poll_LIBS="-lpoll"])
-fi
+AS_IF([test -z "$poll_LIBS"], [
+  AC_CHECK_LIB([poll], [poll], [poll_LIBS="-lpoll"])
+])
+
+# Check to make sure poll() can handle stdin and ptys
+AC_CACHE_CHECK([whether poll can handle ptys],
+               [ac_cv_poll_pty],
+[
+  save_CFLAGS="$CFLAGS"
+  save_LIBS="$LIBS"
+
+  AS_IF([test "x$poll_CFLAGS" != "x"],
+    [CFLAGS="$CFLAGS $poll_CFLAGS"])
+
+  AS_IF([test "x$poll_LIBS" != "x"],
+    [LIBS="$LIBS $poll_LIBS"])
+
+  LIBS="$LIBS -lutil"
+
+  AC_RUN_IFELSE([AC_LANG_PROGRAM([[
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#if HAVE_PTY_H
+#include <pty.h>
+#elif HAVE_UTIL_H
+#include <util.h>
+#endif
+#if FORKPTY_IN_LIBUTIL
+#include <libutil.h>
+#endif
+#include <sys/poll.h>
+
+int master, slave;
+struct pollfd pollfds[ 1 ];
+]], [[
+if ( openpty( &master, &slave, NULL, NULL, NULL ) < 0 ) {
+   perror( "openpty" );
+   exit( 1 );
+}
+pollfds[ 0 ].fd = master;
+pollfds[ 0 ].events = POLLIN;
+int active_fds = poll( pollfds, 1, 100 );
+if ( active_fds < 0 ) {
+   perror( "poll" );
+   exit( 1 );
+}
+if ( pollfds[ 0 ].revents & (POLLERR | POLLHUP | POLLNVAL) ) {
+   exit( 2 );
+}
+]])],
+	[ac_cv_poll_pty=yes],
+	[ac_cv_poll_pty=no])
+  CFLAGS="$save_CFLAGS"
+  LIBS="$save_LIBS"
+])
+AM_CONDITIONAL([COND_THIRD_POLL], [test "x$ac_cv_poll_pty" = "xno"])
+AM_COND_IF([COND_THIRD_POLL],
+  [
+    poll_CFLAGS="-I\$(top_srcdir)/third/poll"
+    poll_LIBS="\$(top_builddir)/third/poll/libpoll.a"
+  ])
+
+AC_MSG_CHECKING([whether pipe2(..., O_CLOEXEC) is supported])
+AC_LINK_IFELSE([AC_LANG_PROGRAM([[#define _GNU_SOURCE
+#include <unistd.h>
+#include <fcntl.h>
+int pipefd[2];
+]], [[(void) pipe2(pipefd, O_CLOEXEC);]])],
+  [AC_DEFINE([HAVE_PIPE2_CLOEXEC], [1],
+     [Define if pipe2(..., O_CLOEXEC) is available.])
+   AC_MSG_RESULT([yes])],
+  [AC_MSG_RESULT([no])])
 
 AC_CHECK_DECLS([__builtin_bswap64, __builtin_ctz])
 
@@ -252,24 +328,13 @@ AC_CHECK_DECL([mach_absolute_time],
      [Define if mach_absolute_time is available.])],
   , [[#include <mach/mach_time.h>]])
 
-AC_CHECK_DECL([pipe2],
-  [AC_DEFINE([HAVE_PIPE2], [1],
-     [Define if pipe2 is available.])],
-  , [[#define _GNU_SOURCE
-      #include <unistd.h>]])
-
-AC_CHECK_DECL([forkpty],
-  [AC_DEFINE([FORKPTY_IN_LIBUTIL], [1],
-     [Define if libutil.h necessary for forkpty().])],
-  , [[#include <libutil.h>]])
-
 AC_CHECK_DECL([htobe64],
   [AC_DEFINE([HAVE_HTOBE64], [1],
   [Define if htobe64 and friends exist.])],
   [AC_CHECK_DECL([OSSwapHostToBigInt64],
      [AC_DEFINE([HAVE_OSX_SWAP], [1],
         [Define if OSSwapHostToBigInt64 and friends exist.])],
-     [AC_MSG_ERROR([Unable to find byte swapping functions])],
+     [AC_MSG_WARN([Unable to find byte swapping functions; using built-in routines.])],
      [[#include <libkern/OSByteOrder.h>]])],
   [[#if defined(HAVE_ENDIAN_H)
 #include <endian.h>
@@ -300,6 +365,7 @@ AC_CONFIG_FILES([
   Makefile
   third/Makefile
   third/libstddjb/Makefile
+  third/poll/Makefile
   src/Makefile
   src/crypto/Makefile
   src/frontend/Makefile

@@ -16,7 +16,6 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include <boost/typeof/typeof.hpp>
 #include <stdio.h>
 
 #include "terminaldisplay.h"
@@ -43,17 +42,18 @@ std::string Display::new_frame( bool initialized, const Framebuffer &last, const
   }
 
   /* has icon name or window title changed? */
-  if ( (!initialized)
-       || (f.get_icon_name() != frame.last_frame.get_icon_name())
-       || (f.get_window_title() != frame.last_frame.get_window_title()) ) {
+  if ( has_title &&
+       ( (!initialized)
+         || (f.get_icon_name() != frame.last_frame.get_icon_name())
+         || (f.get_window_title() != frame.last_frame.get_window_title()) ) ) {
       /* set icon name and window title */
     if ( f.get_icon_name() == f.get_window_title() ) {
       /* write combined Icon Name and Window Title */
       frame.append( "\033]0;" );
       const std::deque<wchar_t> &window_title( f.get_window_title() );
-      for ( BOOST_AUTO( i, window_title.begin() );
-	    i != window_title.end();
-	    i++ ) {
+      for ( std::deque<wchar_t>::const_iterator i = window_title.begin();
+            i != window_title.end();
+            i++ ) {
 	snprintf( tmp, 64, "%lc", *i );
 	frame.append( tmp );
       }
@@ -62,7 +62,7 @@ std::string Display::new_frame( bool initialized, const Framebuffer &last, const
       /* write Icon Name */
       frame.append( "\033]1;" );
       const std::deque<wchar_t> &icon_name( f.get_icon_name() );
-      for ( BOOST_AUTO( i, icon_name.begin() );
+      for ( std::deque<wchar_t>::const_iterator i = icon_name.begin();
 	    i != icon_name.end();
 	    i++ ) {
 	snprintf( tmp, 64, "%lc", *i );
@@ -72,7 +72,7 @@ std::string Display::new_frame( bool initialized, const Framebuffer &last, const
 
       frame.append( "\033]2;" );
       const std::deque<wchar_t> &window_title( f.get_window_title() );
-      for ( BOOST_AUTO( i, window_title.begin() );
+      for ( std::deque<wchar_t>::const_iterator i = window_title.begin();
 	    i != window_title.end();
 	    i++ ) {
 	snprintf( tmp, 64, "%lc", *i );
@@ -194,20 +194,22 @@ std::string Display::new_frame( bool initialized, const Framebuffer &last, const
 	  frame.x < f.ds.get_width(); /* let put_cell() handle advance */ ) {
       last_x = frame.x;
       put_cell( initialized, frame, f );
+    }
 
-      /* To hint that a word-select should group the end of one line
-	 with the beginning of the next, we let the real cursor
-	 actually wrap around in cases where it wrapped around for us. */
+    /* To hint that a word-select should group the end of one line
+       with the beginning of the next, we let the real cursor
+       actually wrap around in cases where it wrapped around for us. */
 
-      if ( (frame.cursor_x >= f.ds.get_width())
-	   && (frame.y < f.ds.get_height() - 1)
-	   && f.get_row( frame.y )->get_wrap()
-	   && (!initialized || !frame.last_frame.get_row( frame.y )->get_wrap()) ) {
-	/* next write will wrap */
-	frame.cursor_x = 0;
-	frame.cursor_y++;
-	frame.force_next_put = true;
-      }
+    if ( (frame.y < f.ds.get_height() - 1)
+	 && f.get_row( frame.y )->get_wrap() ) {
+      frame.x = last_x;
+      frame.force_next_put = true;
+      put_cell( initialized, frame, f );
+
+      /* next write will wrap */
+      frame.cursor_x = 0;
+      frame.cursor_y++;
+      frame.force_next_put = true;
     }
 
     /* Turn off wrap */
@@ -302,8 +304,10 @@ void Display::put_cell( bool initialized, FrameState &frame, const Framebuffer &
 
     if ( frame.force_next_put ) {
       frame.append( " " );
-      frame.append_silent_move( frame.y, frame.x );
+      frame.cursor_x++;
+      frame.x++;
       frame.force_next_put = false;
+      return;
     }
 
     /* can we go to the end of the line? */

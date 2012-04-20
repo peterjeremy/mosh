@@ -16,7 +16,6 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include <boost/typeof/typeof.hpp>
 #include <assert.h>
 #include <stdio.h>
 
@@ -33,19 +32,25 @@ void Cell::reset( int background_color )
   wrap = false;
 }
 
+void DrawState::reinitialize_tabs( unsigned int start )
+{
+  assert( default_tabs );
+  for ( unsigned int i = start; i < tabs.size(); i++ ) {
+    tabs[ i ] = ( (i % 8) == 0 );
+  }
+}
+
 DrawState::DrawState( int s_width, int s_height )
   : width( s_width ), height( s_height ),
     cursor_col( 0 ), cursor_row( 0 ),
-    combining_char_col( 0 ), combining_char_row( 0 ), tabs( s_width ),
+    combining_char_col( 0 ), combining_char_row( 0 ), default_tabs( true ), tabs( s_width ),
     scrolling_region_top_row( 0 ), scrolling_region_bottom_row( height - 1 ),
     renditions( 0 ), save(),
     next_print_will_wrap( false ), origin_mode( false ), auto_wrap_mode( true ),
     insert_mode( false ), cursor_visible( true ), reverse_video( false ),
     application_mode_cursor_keys( false )
 {
-  for ( int i = 0; i < width; i++ ) {
-    tabs[ i ] = ( (i % 8) == 0 );
-  }
+  reinitialize_tabs( 0 );
 }
 
 Framebuffer::Framebuffer( int s_width, int s_height )
@@ -205,19 +210,6 @@ int DrawState::limit_bottom( void )
   return origin_mode ? scrolling_region_bottom_row : height - 1;
 }
 
-std::vector<int> DrawState::get_tabs( void )
-{
-  std::vector<int> ret;
-
-  for ( int i = 0; i < width; i++ ) {
-    if ( tabs[ i ] ) {
-      ret.push_back( i );
-    }
-  }
-
-  return ret;
-}
-
 void Framebuffer::apply_renditions_to_current_cell( void )
 {
   get_mutable_cell()->renditions = ds.get_renditions();
@@ -323,8 +315,12 @@ void Framebuffer::soft_reset( void )
 
 void Framebuffer::posterize( void )
 {
-  for ( BOOST_AUTO( i, rows.begin() ); i != rows.end(); i++ ) {
-    for ( BOOST_AUTO( j, i->cells.begin() ); j != i->cells.end(); j++ ) {
+  for ( rows_type::iterator i = rows.begin();
+        i != rows.end();
+        i++ ) {
+    for ( Row::cells_type::iterator j = i->cells.begin();
+          j != i->cells.end();
+          j++ ) {
       j->renditions.posterize();
     }
   }
@@ -337,7 +333,7 @@ void Framebuffer::resize( int s_width, int s_height )
 
   rows.resize( s_height, newrow() );
 
-  for ( std::deque<Row>::iterator i = rows.begin();
+  for ( rows_type::iterator i = rows.begin();
 	i != rows.end();
 	i++ ) {
     i->set_wrap( false );
@@ -358,12 +354,15 @@ void DrawState::resize( int s_width, int s_height )
     scrolling_region_bottom_row = s_height - 1;
   }
 
+  tabs.resize( s_width );
+  if ( default_tabs ) {
+    reinitialize_tabs( width );
+  }
+
   width = s_width;
   height = s_height;
 
   snap_cursor_to_border();
-
-  tabs.resize( width );
 
   /* saved cursor will be snapped to border on restore */
 
@@ -479,11 +478,6 @@ std::string Renditions::sgr( void ) const
 
 /* Reduce 256 "standard" colors to the 8 ANSI colors. */
 
-/* We could do something fancy like find the nearest system color in
-   the deltaE(2000) sense, but for "business graphics," the colorimetric
-   intent is probably less important than just having separate colors
-   be separate as much as possible. */
-
 /* Terminal emulators generally agree on the (R',G',B') values of the
    "standard" 256-color pallette beyond #15, but for the first 16
    colors there is disagreement. Most terminal emulators are roughly
@@ -537,7 +531,7 @@ void Renditions::posterize( void )
 
 void Row::reset( int background_color )
 {
-  for ( std::vector<Cell>::iterator i = cells.begin();
+  for ( cells_type::iterator i = cells.begin();
 	i != cells.end();
 	i++ ) {
     i->reset( background_color );
@@ -548,12 +542,16 @@ void Framebuffer::prefix_window_title( const std::deque<wchar_t> &s )
 {
   if ( icon_name == window_title ) {
     /* preserve equivalence */
-    for ( BOOST_AUTO( i, s.rbegin() ); i != s.rend(); i++ ) {
+    for ( std::deque<wchar_t>::const_reverse_iterator i = s.rbegin();
+          i != s.rend();
+          i++ ) {
       icon_name.push_front( *i );
     }
   }
 
-  for ( BOOST_AUTO( i, s.rbegin() ); i != s.rend(); i++ ) {
+  for ( std::deque<wchar_t>::const_reverse_iterator i = s.rbegin();
+        i != s.rend();
+        i++ ) {
     window_title.push_front( *i );
   }
 }
@@ -565,4 +563,41 @@ wchar_t Cell::debug_contents( void ) const
   } else {
     return contents.front();
   }
+}
+
+bool Cell::compare( const Cell &other ) const
+{
+  bool ret = false;
+
+  if ( !contents_match( other ) ) {
+    ret = true;
+    fprintf( stderr, "Contents: %lc vs. %lc\n",
+	     debug_contents(), other.debug_contents() );
+  }
+
+  if ( fallback != other.fallback ) {
+    ret = true;
+    fprintf( stderr, "fallback: %d vs. %d\n",
+	     fallback, other.fallback );
+  }
+
+  if ( width != other.width ) {
+    ret = true;
+    fprintf( stderr, "width: %d vs. %d\n",
+	     width, other.width );
+  }
+
+  if ( !(renditions == other.renditions) ) {
+    ret = true;
+    fprintf( stderr, "renditions: %s vs. %s\n",
+	     renditions.sgr().c_str(), other.renditions.sgr().c_str() );
+  }
+
+  if ( wrap != other.wrap ) {
+    ret = true;
+    fprintf( stderr, "wrap: %d vs. %d\n",
+	     wrap, other.wrap );
+  }
+
+  return ret;
 }

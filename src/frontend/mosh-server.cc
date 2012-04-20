@@ -39,6 +39,11 @@
 #include <arpa/inet.h>
 #include <getopt.h>
 #include <time.h>
+#include <sys/stat.h>
+
+#ifdef HAVE_PATHS_H
+#include <paths.h>
+#endif
 
 #include "sigfd.h"
 #include "completeterminal.h"
@@ -57,6 +62,10 @@
 #include <libutil.h>
 #endif
 
+#ifndef _PATH_BSHELL
+#define _PATH_BSHELL "/bin/sh"
+#endif
+
 #include "networktransport.cc"
 
 typedef Network::Transport< Terminal::Complete, Network::UserStream > ServerConnection;
@@ -66,7 +75,8 @@ void serve( int host_fd,
 	    ServerConnection &network );
 
 int run_server( const char *desired_ip, const char *desired_port,
-		char *command[], const int colors, bool verbose );
+		const string &command_path, char *command_argv[],
+		const int colors, bool verbose, bool with_motd );
 
 using namespace std;
 
@@ -74,6 +84,10 @@ void print_usage( const char *argv0 )
 {
   fprintf( stderr, "Usage: %s new [-s] [-v] [-i LOCALADDR] [-p PORT] [-c COLORS] [-l NAME=VALUE] [-- COMMAND...]\n", argv0 );
 }
+
+void print_motd( void );
+void chdir_homedir( void );
+bool motd_hushed( void );
 
 /* Simple spinloop */
 void spin( void )
@@ -109,7 +123,8 @@ int main( int argc, char *argv[] )
 
   char *desired_ip = NULL;
   char *desired_port = NULL;
-  char **command = NULL;
+  string command_path;
+  char **command_argv = NULL;
   int colors = 0;
   bool verbose = false; /* don't close stdin/stdout/stderr */
   /* Will cause mosh-server not to correctly detach on old versions of sshd. */
@@ -119,7 +134,7 @@ int main( int argc, char *argv[] )
   for ( int i = 0; i < argc; i++ ) {
     if ( 0 == strcmp( argv[ i ], "--" ) ) { /* -- is mandatory */
       if ( i != argc - 1 ) {
-	command = argv + i + 1;
+	command_argv = argv + i + 1;
       }
       argc = i; /* rest of options before -- */
       break;
@@ -185,9 +200,11 @@ int main( int argc, char *argv[] )
     exit( 1 );
   }
 
+  bool with_motd = false;
+
   /* Get shell */
   char *my_argv[ 2 ];
-  if ( !command ) {
+  if ( !command_argv ) {
     /* get shell name */
     struct passwd *pw = getpwuid( geteuid() );
     if ( pw == NULL ) {
@@ -195,26 +212,50 @@ int main( int argc, char *argv[] )
       exit( 1 );
     }
 
-    string shell_name( pw->pw_shell );
-    if ( shell_name.empty() ) { /* empty shell means Bourne shell */
-      shell_name = "/bin/sh";
+    string shell_path( pw->pw_shell );
+    if ( shell_path.empty() ) { /* empty shell means Bourne shell */
+      shell_path = _PATH_BSHELL;
     }
 
-    my_argv[ 0 ] = pw->pw_shell;
+    command_path = shell_path;
+
+    string shell_name;
+
+    size_t shell_slash( shell_path.rfind('/') );
+    if ( shell_slash == string::npos ) {
+      shell_name = shell_path;
+    } else {
+      shell_name = shell_path.substr(shell_slash + 1);
+    }
+
+    /* prepend '-' to make login shell */
+    shell_name = '-' + shell_name;
+
+    my_argv[ 0 ] = strdup( shell_name.c_str() );
     my_argv[ 1 ] = NULL;
-    command = my_argv;
+    command_argv = my_argv;
+
+    with_motd = true;
+  }
+
+  if ( command_path.empty() ) {
+    command_path = command_argv[0];
   }
 
   /* Adopt implementation locale */
   set_native_locale();
   if ( !is_utf8_locale() ) {
+    /* save details for diagnostic */
+    LocaleVar native_ctype = get_ctype();
+    string native_charset( locale_charset() );
+
     /* apply locale-related environment variables from client */
     clear_locale_variables();
     for ( list<string>::const_iterator i = locale_vars.begin();
 	  i != locale_vars.end();
 	  i++ ) {
       char *env_string = strdup( i->c_str() );
-      assert( env_string );
+      fatal_assert( env_string );
       if ( 0 != putenv( env_string ) ) {
 	perror( "putenv" );
       }
@@ -223,15 +264,19 @@ int main( int argc, char *argv[] )
     /* check again */
     set_native_locale();
     if ( !is_utf8_locale() ) {
+      LocaleVar client_ctype = get_ctype();
+      string client_charset( locale_charset() );
+
       fprintf( stderr, "mosh-server needs a UTF-8 native locale to run.\n\n" );
-      fprintf( stderr, "Unfortunately, the locale environment variables currently specify\nthe character set \"%s\".\n\n", locale_charset() );
+      fprintf( stderr, "Unfortunately, the local environment (%s) specifies\nthe character set \"%s\",\n\n", native_ctype.str().c_str(), native_charset.c_str() );
+      fprintf( stderr, "The client-supplied environment (%s) specifies\nthe character set \"%s\".\n\n", client_ctype.str().c_str(), client_charset.c_str() );
       int unused __attribute((unused)) = system( "locale" );
       exit( 1 );
     }
   }
 
   try {
-    return run_server( desired_ip, desired_port, command, colors, verbose );
+    return run_server( desired_ip, desired_port, command_path, command_argv, colors, verbose, with_motd );
   } catch ( Network::NetworkException e ) {
     fprintf( stderr, "Network exception: %s: %s\n",
 	     e.function.c_str(), strerror( e.the_errno ) );
@@ -244,7 +289,8 @@ int main( int argc, char *argv[] )
 }
 
 int run_server( const char *desired_ip, const char *desired_port,
-		char *command[], const int colors, bool verbose ) {
+		const string &command_path, char *command_argv[],
+		const int colors, bool verbose, bool with_motd ) {
   /* get initial window size */
   struct winsize window_size;
   if ( ioctl( STDIN_FILENO, TIOCGWINSZ, &window_size ) < 0 ) {
@@ -260,7 +306,9 @@ int run_server( const char *desired_ip, const char *desired_port,
   Network::UserStream blank;
   ServerConnection *network = new ServerConnection( terminal, blank, desired_ip, desired_port );
 
-  /* network.set_verbose(); */
+  if ( verbose ) {
+    network->set_verbose();
+  }
 
   printf( "\nMOSH CONNECT %d %s\n", network->port(), network->get_key().c_str() );
   fflush( stdout );
@@ -307,6 +355,14 @@ int run_server( const char *desired_ip, const char *desired_port,
   fprintf( stderr, "\nWarning: termios IUTF8 flag not defined.\nCharacter-erase of multibyte character sequence\nprobably does not work properly on this platform.\n" );
 #endif /* HAVE_IUTF8 */
 
+  /* close file descriptors */
+  if ( !verbose ) {
+    /* Necessary to properly detach on old versions of sshd (e.g. RHEL/CentOS 5.0). */
+    fclose( stdin );
+    fclose( stdout );
+    fclose( stderr );
+  }
+
   /* Fork child process */
   pid_t child = forkpty( &master, NULL, &child_termios, &window_size );
 
@@ -319,6 +375,11 @@ int run_server( const char *desired_ip, const char *desired_port,
     /* child */
 
     setsid(); /* may fail */
+
+    /* reopen stdio */
+    stdin = fdopen( STDIN_FILENO, "r" );
+    stdout = fdopen( STDOUT_FILENO, "w" );
+    stderr = fdopen( STDERR_FILENO, "w" );
 
     /* unblock signals */
     sigset_t signals_to_block;
@@ -349,25 +410,20 @@ int run_server( const char *desired_ip, const char *desired_port,
       exit( 1 );
     }
 
-    /* prepend '-' to make login shell */
-    string executable( command[ 0 ] );
-    string argv0 = "-" + executable;
+    chdir_homedir();
 
-    command[ 0 ] = strdup( argv0.c_str() );
-    fatal_assert( command[ 0 ] );
-    
-    if ( execvp( executable.c_str(), command ) < 0 ) {
+    if ( with_motd && (!motd_hushed()) ) {
+      print_motd();
+    }
+
+    Crypto::reenable_dumping_core();
+
+    if ( execvp( command_path.c_str(), command_argv ) < 0 ) {
       perror( "execvp" );
       _exit( 1 );
     }
   } else {
     /* parent */
-    if ( !verbose ) {
-      /* Necessary to properly detach on old versions of sshd (e.g. RHEL/CentOS 5.0). */
-      close( STDIN_FILENO );
-      close( STDOUT_FILENO );
-      close( STDERR_FILENO );
-    }
 
     #ifdef HAVE_UTEMPTER
     /* make utmp entry */
@@ -386,16 +442,16 @@ int run_server( const char *desired_ip, const char *desired_port,
 	       e.text.c_str() );
     }
 
+    #ifdef HAVE_UTEMPTER
+    utempter_remove_record( master );
+    #endif
+
     if ( close( master ) < 0 ) {
       perror( "close" );
       exit( 1 );
     }
 
     delete network;
-
-    #ifdef HAVE_UTEMPTER
-    utempter_remove_added_record();
-    #endif
   }
 
   printf( "\n[mosh-server is exiting.]\n" );
@@ -508,7 +564,7 @@ void serve( int host_fd, Terminal::Complete &terminal, ServerConnection &network
 	  /* update utmp entry if we have become "connected" */
 	  if ( (!connected_utmp)
 	       || ( saved_addr.s_addr != network.get_remote_ip().s_addr ) ) {
-	    utempter_remove_added_record();
+	    utempter_remove_record( host_fd );
 
 	    saved_addr = network.get_remote_ip();
 
@@ -605,7 +661,7 @@ void serve( int host_fd, Terminal::Complete &terminal, ServerConnection &network
       /* update utmp if has been more than 10 seconds since heard from client */
       if ( connected_utmp ) {
 	if ( time_since_remote_state > 10000 ) {
-	  utempter_remove_added_record();
+	  utempter_remove_record( host_fd );
 
 	  char tmp[ 64 ];
 	  snprintf( tmp, 64, "mosh [%d]", getpid() );
@@ -642,4 +698,53 @@ void serve( int host_fd, Terminal::Complete &terminal, ServerConnection &network
       }
     }
   }
+}
+
+/* OpenSSH prints the motd on startup, so we will too */
+void print_motd( void )
+{
+  FILE *motd = fopen( "/etc/motd", "r" );
+  if ( !motd ) {
+    return; /* don't report error on missing or forbidden motd */
+  }
+
+  const int BUFSIZE = 256;
+
+  char buffer[ BUFSIZE ];
+  while ( 1 ) {
+    size_t bytes_read = fread( buffer, 1, BUFSIZE, motd );
+    if ( bytes_read == 0 ) {
+      break; /* don't report error */
+    }
+    size_t bytes_written = fwrite( buffer, 1, bytes_read, stdout );
+    if ( bytes_written == 0 ) {
+      break;
+    }
+  }
+
+  fclose( motd );
+}
+
+void chdir_homedir( void )
+{
+  struct passwd *pw = getpwuid( geteuid() );
+  if ( pw == NULL ) {
+    perror( "getpwuid" );
+    /* non-fatal */
+  }
+
+  if ( chdir( pw->pw_dir ) < 0 ) {
+    perror( "chdir" );
+  }
+
+  if ( setenv( "PWD", pw->pw_dir, 1 ) < 0 ) {
+    perror( "setenv" );
+  }
+}
+
+bool motd_hushed( void )
+{
+  /* must be in home directory already */
+  struct stat buf;
+  return (0 == lstat( ".hushlogin", &buf ));
 }

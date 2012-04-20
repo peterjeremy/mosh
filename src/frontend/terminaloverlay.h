@@ -112,9 +112,13 @@ namespace Overlay {
   public:
     int row_num;
 
-    vector<ConditionalOverlayCell> overlay_cells;
+    typedef vector<ConditionalOverlayCell> overlay_cells_type;
+    overlay_cells_type overlay_cells;
 
     void apply( Framebuffer &fb, uint64_t confirmed_epoch, bool flag ) const;
+
+    /* For use with find_if */
+    bool row_num_eq( int v ) const { return row_num == v; }
 
     ConditionalOverlayRow( int s_row_num ) : row_num( s_row_num ), overlay_cells() {}
   };
@@ -130,7 +134,7 @@ namespace Overlay {
     bool need_countup( uint64_t ts ) const { return ts - last_word_from_server > 6500; }
     void adjust_message( void );
     void apply( Framebuffer &fb ) const;
-    void set_notification_string( const wstring s_message ) { message = s_message; message_expiration = timestamp() + 1000; }
+    void set_notification_string( const wstring &s_message, bool permanent = false ) { message = s_message; if ( permanent ) { message_expiration = -1; } else { message_expiration = timestamp() + 1000; } }
     const wstring &get_notification_string( void ) const { return message; }
     void server_heard( uint64_t s_last_word ) { last_word_from_server = s_last_word; }
     uint64_t get_message_expiration( void ) const { return message_expiration; }
@@ -155,9 +159,13 @@ namespace Overlay {
     char last_byte;
     Parser::UTF8Parser parser;
 
-    list<ConditionalOverlayRow> overlays;
+    typedef list<ConditionalOverlayRow> overlays_type;
+    overlays_type overlays;
 
-    list<ConditionalCursorMove> cursors;
+    typedef list<ConditionalCursorMove> cursors_type;
+    cursors_type cursors;
+
+    typedef ConditionalOverlayRow::overlay_cells_type overlay_cells_type;
 
     uint64_t local_frame_sent, local_frame_acked, local_frame_late_acked;
 
@@ -183,6 +191,8 @@ namespace Overlay {
 
     unsigned int send_interval;
 
+    int last_height, last_width;
+
   public:
     enum DisplayPreference {
       Always,
@@ -204,6 +214,11 @@ namespace Overlay {
 
     bool active( void ) const;
 
+    bool timing_tests_necessary( void ) const {
+      /* Are there any timing-based triggers that haven't fired yet? */
+      return !( glitch_trigger && flagging );
+    }
+
     void set_local_frame_sent( uint64_t x ) { local_frame_sent = x; }
     void set_local_frame_acked( uint64_t x ) { local_frame_acked = x; }
     void set_local_frame_late_acked( uint64_t x ) { local_frame_late_acked = x; }
@@ -219,6 +234,7 @@ namespace Overlay {
 			       glitch_trigger( 0 ),
 			       last_quick_confirmation( 0 ),
 			       send_interval( 250 ),
+			       last_height( 0 ), last_width( 0 ),
 			       display_preference( Adaptive )
     {
     }
